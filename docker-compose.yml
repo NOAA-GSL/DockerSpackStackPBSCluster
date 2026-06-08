@@ -1,0 +1,113 @@
+x-node-common: &node-common
+  image: ghcr.io/noaa-gsl/dockerspackstackpbscluster/pbs-spack-stack-mom:ubuntu-${UBUNTU_VERSION:-26.04}-spack-stack-${SPACK_STACK_VERSION:-2.1.0}
+  shm_size: '4g'
+  user: admin
+  volumes:
+    - home-vol:/home/admin
+    - opt-vol:/opt/spack-stack:ro
+  depends_on:
+    pbsserver:
+      condition: service_started
+    pbsfrontend:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "ssh", "-o", "StrictHostKeyChecking=no", "admin@localhost", "hostname"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+
+services:
+  pbsfrontend:
+    build:
+      context: ./frontend
+      args:
+        SPACK_BUILD_JOBS: 8
+        BASE_IMAGE_TAG: ubuntu-${UBUNTU_VERSION:-26.04}-openpbs-${OPENPBS_VERSION}
+        UBUNTU_VERSION: ${UBUNTU_VERSION:-26.04}
+        SPACK_STACK_VERSION: ${SPACK_STACK_VERSION:-2.1.0}
+      secrets:
+        - github_token
+    image: ghcr.io/noaa-gsl/dockerspackstackpbscluster/pbs-spack-stack-frontend:ubuntu-${UBUNTU_VERSION:-26.04}-spack-stack-${SPACK_STACK_VERSION:-2.1.0}
+    container_name: spack-stack-frontend
+    shm_size: '4g'
+    hostname: pbsfrontend
+    user: admin
+    volumes:
+      - home-vol:/home/admin
+      - opt-vol:/opt/spack-stack
+    ports:
+      - 8888:8888
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ssh-ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 250
+      start_period: 60s
+
+  pbsserver:
+    build:
+      context: ./server
+      args:
+        BASE_IMAGE_TAG: ubuntu-${UBUNTU_VERSION:-26.04}-openpbs-${OPENPBS_VERSION}
+    image: ghcr.io/noaa-gsl/dockerspackstackpbscluster/pbs-spack-stack-server:ubuntu-${UBUNTU_VERSION:-26.04}-spack-stack-${SPACK_STACK_VERSION:-2.1.0}
+    container_name: spack-stack-server
+    shm_size: '4g'
+    hostname: pbsserver
+    user: admin
+    volumes:
+      - home-vol:/home/admin
+      - opt-vol:/opt/spack-stack:ro
+    ports:
+      - 15001:15001
+      - 15003:15003
+      - 17001:17001
+    depends_on:
+      pbsfrontend:
+        condition: service_healthy
+
+  pbsnode1:
+    <<: *node-common
+    build:
+      context: ./mom
+      args:
+        BASE_IMAGE_TAG: ubuntu-${UBUNTU_VERSION:-26.04}-openpbs-${OPENPBS_VERSION}
+    container_name: spack-stack-node1
+    hostname: pbsnode1
+    environment:
+      - PBS_NODENAME=pbsnode1
+
+  pbsnode2:
+    <<: *node-common
+    container_name: spack-stack-node2
+    hostname: pbsnode2
+    environment:
+      - PBS_NODENAME=pbsnode2
+
+  pbsnode3:
+    <<: *node-common
+    container_name: spack-stack-node3
+    hostname: pbsnode3
+    environment:
+      - PBS_NODENAME=pbsnode3
+
+  pbsnode4:
+    <<: *node-common
+    container_name: spack-stack-node4
+    hostname: pbsnode4
+    environment:
+      - PBS_NODENAME=pbsnode4
+
+  pbsnode5:
+    <<: *node-common
+    container_name: spack-stack-node5
+    hostname: pbsnode5
+    environment:
+      - PBS_NODENAME=pbsnode5
+
+volumes:
+  home-vol:
+  opt-vol:
+
+secrets:
+  github_token:
+    environment: GITHUB_TOKEN

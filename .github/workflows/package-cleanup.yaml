@@ -1,0 +1,156 @@
+name: PackageCleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      buildcache_cutoff:
+        description: 'Delete buildcache entries older than this (ISO 8601 date or datetime, e.g. 2026-05-18 or 2026-05-18T14:30:00Z). Leave empty to skip buildcache cleanup.'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Set to true to only list what would be deleted without actually deleting'
+        required: false
+        default: 'true'
+
+jobs:
+  cleanup-untagged:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Remove untagged versions of dockerspackstackpbscluster/pbs-spack-stack-frontend
+        uses: actions/delete-package-versions@v5
+        with: 
+          package-name: 'dockerspackstackpbscluster/pbs-spack-stack-frontend'
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: 'true'
+      - name: Remove untagged versions of dockerspackstackpbscluster/pbs-spack-stack-server
+        uses: actions/delete-package-versions@v5
+        with: 
+          package-name: 'dockerspackstackpbscluster/pbs-spack-stack-server'
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: 'true'
+      - name: Remove untagged versions of dockerspackstackpbscluster/pbs-spack-stack-mom
+        uses: actions/delete-package-versions@v5
+        with: 
+          package-name: 'dockerspackstackpbscluster/pbs-spack-stack-mom'
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: 'true'
+      - name: Remove untagged versions of dockerspackstackpbscluster/frontend-cache-amd64
+        uses: actions/delete-package-versions@v5
+        with: 
+          package-name: 'dockerspackstackpbscluster/frontend-cache-amd64'
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: 'true'
+      - name: Remove untagged versions of dockerspackstackpbscluster/frontend-cache-arm64
+        uses: actions/delete-package-versions@v5
+        with: 
+          package-name: 'dockerspackstackpbscluster/frontend-cache-arm64'
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: 'true'
+      - name: Remove untagged versions of dockerspackstackpbscluster/server-cache-amd64
+        uses: actions/delete-package-versions@v5
+        with: 
+          package-name: 'dockerspackstackpbscluster/server-cache-amd64'
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: 'true'
+      - name: Remove untagged versions of dockerspackstackpbscluster/server-cache-arm64
+        uses: actions/delete-package-versions@v5
+        with: 
+          package-name: 'dockerspackstackpbscluster/server-cache-arm64'
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: 'true'
+      - name: Remove untagged versions of dockerspackstackpbscluster/mom-cache-amd64
+        uses: actions/delete-package-versions@v5
+        with: 
+          package-name: 'dockerspackstackpbscluster/mom-cache-amd64'
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: 'true'
+      - name: Remove untagged versions of dockerspackstackpbscluster/mom-cache-arm64
+        uses: actions/delete-package-versions@v5
+        with: 
+          package-name: 'dockerspackstackpbscluster/mom-cache-arm64'
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: 'true'
+
+  cleanup-stale-buildcache:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.buildcache_cutoff != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Clean stale buildcache entries
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const cutoff = new Date('${{ github.event.inputs.buildcache_cutoff }}');
+            const dryRun = '${{ github.event.inputs.dry_run }}' === 'true';
+            const org = 'noaa-gsl';
+            const packageName = 'dockerspackstackpbscluster/buildcache';
+
+            console.log(`Cutoff date: ${cutoff.toISOString()}`);
+            console.log(`Dry run: ${dryRun}`);
+
+            let deleted = 0;
+            let kept = 0;
+            let page = 1;
+            const perPage = 100;
+
+            while (true) {
+              const versions = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
+                package_type: 'container',
+                package_name: packageName,
+                org: org,
+                per_page: perPage,
+                page: page,
+              });
+
+              if (versions.data.length === 0) break;
+
+              for (const version of versions.data) {
+                const createdAt = new Date(version.created_at);
+                const tags = version.metadata?.container?.tags || [];
+
+                const isIndex = tags.some(t => t.includes('index') || t.startsWith('_'));
+                if (isIndex) {
+                  console.log(`Preserving index: ${version.id} (tags: ${tags.join(', ')})`);
+                  kept++;
+                  continue;
+                }
+
+                if (createdAt < cutoff) {
+                  if (dryRun) {
+                    console.log(`[DRY RUN] Would delete: ${version.id} (created ${createdAt.toISOString()}, tags: ${tags.join(', ')})`);
+                  } else {
+                    console.log(`Deleting: ${version.id} (created ${createdAt.toISOString()}, tags: ${tags.join(', ')})`);
+                    await github.rest.packages.deletePackageVersionForOrg({
+                      package_type: 'container',
+                      package_name: packageName,
+                      org: org,
+                      package_version_id: version.id,
+                    });
+                  }
+                  deleted++;
+                } else {
+                  console.log(`Keeping: ${version.id} (created ${createdAt.toISOString()}, tags: ${tags.join(', ')})`);
+                  kept++;
+                }
+              }
+
+              if (versions.data.length < perPage) break;
+              page++;
+            }
+
+            console.log(`\nSummary: ${deleted} ${dryRun ? 'would be ' : ''}deleted, ${kept} kept`);

@@ -1,0 +1,567 @@
+name: Docker PBS
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+  pull_request:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+  workflow_dispatch:
+
+env:
+  OPENPBS_VERSION: 23.06.06
+  SPACK_STACK_VERSION: 2.1.0
+  LATEST_UBUNTU: '26.04'
+  REGISTRY_FRONTEND_IMAGE: ghcr.io/noaa-gsl/dockerspackstackpbscluster/pbs-spack-stack-frontend
+  REGISTRY_SERVER_IMAGE: ghcr.io/noaa-gsl/dockerspackstackpbscluster/pbs-spack-stack-server
+  REGISTRY_MOM_IMAGE: ghcr.io/noaa-gsl/dockerspackstackpbscluster/pbs-spack-stack-mom
+
+jobs:
+  build-test-push-amd64:
+    name: amd64 (ubuntu-${{ matrix.ubuntu }})
+    runs-on: ubuntu2204-8c-32g-300ssd
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: &ubuntu_versions
+          - '24.04'
+          - '26.04'
+    permissions:
+      packages: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          logout: false
+      - name: Prune pre-loaded GHA docker images
+        run: |
+          docker images
+          docker image prune -a -f
+          docker images
+      - name: Build frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/amd64
+          tags: ${{ env.REGISTRY_FRONTEND_IMAGE }}:ubuntu-${{ matrix.ubuntu }}-spack-stack-${{ env.SPACK_STACK_VERSION }}
+          build-args: |
+            SPACK_BUILD_JOBS=8
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+            UBUNTU_VERSION=${{ matrix.ubuntu }}
+            SPACK_STACK_VERSION=${{ env.SPACK_STACK_VERSION }}
+          secrets: |
+            "github_token=${{ secrets.GITHUB_TOKEN }}"
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/frontend-cache-ubuntu-${{ matrix.ubuntu }}-amd64:cache
+          cache-to: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/frontend-cache-ubuntu-${{ matrix.ubuntu }}-amd64:cache,mode=max
+          load: true
+      - name: Build server image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          file: ./server/Dockerfile
+          platforms: linux/amd64
+          tags: ${{ env.REGISTRY_SERVER_IMAGE }}:ubuntu-${{ matrix.ubuntu }}-spack-stack-${{ env.SPACK_STACK_VERSION }}
+          build-args: |
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/server-cache-ubuntu-${{ matrix.ubuntu }}-amd64:cache
+          cache-to: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/server-cache-ubuntu-${{ matrix.ubuntu }}-amd64:cache,mode=max
+          load: true
+      - name: Build mom image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./mom
+          file: ./mom/Dockerfile
+          platforms: linux/amd64
+          tags: ${{ env.REGISTRY_MOM_IMAGE }}:ubuntu-${{ matrix.ubuntu }}-spack-stack-${{ env.SPACK_STACK_VERSION }}
+          build-args: |
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/mom-cache-ubuntu-${{ matrix.ubuntu }}-amd64:cache
+          cache-to: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/mom-cache-ubuntu-${{ matrix.ubuntu }}-amd64:cache,mode=max
+          load: true
+      - name: Start containers for testing
+        env:
+          UBUNTU_VERSION: ${{ matrix.ubuntu }}
+          OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
+          SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
+        run: docker compose -f docker-compose-test.yml up --pull never -d
+      - name: Check cluster logs
+        run: docker compose -f docker-compose-test.yml logs
+      - name: Check status of the cluster containers
+        run: docker compose -f docker-compose-test.yml ps
+      - name: Check status of PBS
+        run: docker exec spack-stack-server bash -lc "qstat -Bf"
+      - name: Check status of PBS nodes
+        run: docker exec spack-stack-server bash -lc "pbsnodes -a"
+      - name: Run a PBS job
+        run: |
+          docker exec spack-stack-frontend bash -lc "echo hostname | qsub"
+          sleep 5
+          docker exec spack-stack-server bash -lc "qstat -x"
+      - name: Test SSH access to PBS compute nodes
+        run: |
+          docker exec spack-stack-frontend bash -lc "timeout 5s ssh pbsnode1 hostname"
+          docker exec spack-stack-frontend bash -lc "timeout 5s ssh pbsnode2 hostname"
+          docker exec spack-stack-frontend bash -lc "timeout 5s ssh pbsnode3 hostname"
+      - name: Load spack-stack envs
+        run: |
+          docker exec spack-stack-frontend bash -l -c "module use /opt/spack-stack/envs/unified-env/modules/Core ; module load stack-gcc stack-openmpi jedi-mpas-env; module list"
+          docker exec spack-stack-frontend bash -l -c "module use /opt/spack-stack/envs/unified-env/modules/Core ; module load stack-gcc stack-openmpi jedi-fv3-env; module list"
+      - name: Compile and run MPI program
+        run: docker exec spack-stack-frontend bash -l -c "cd test; ./test_hello.sh"
+      - name: Shut down PBS cluster containers
+        if: always()
+        env:
+          UBUNTU_VERSION: ${{ matrix.ubuntu }}
+          OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
+          SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
+        run: docker compose -f docker-compose-test.yml down
+      - name: Push frontend by digest
+        id: push-frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/amd64
+          build-args: |
+            SPACK_BUILD_JOBS=8
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+            UBUNTU_VERSION=${{ matrix.ubuntu }}
+            SPACK_STACK_VERSION=${{ env.SPACK_STACK_VERSION }}
+          secrets: |
+            "github_token=${{ secrets.GITHUB_TOKEN }}"
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/frontend-cache-ubuntu-${{ matrix.ubuntu }}-amd64:cache
+          outputs: type=image,name=${{ env.REGISTRY_FRONTEND_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Push server by digest
+        id: push-server
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          file: ./server/Dockerfile
+          platforms: linux/amd64
+          build-args: |
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/server-cache-ubuntu-${{ matrix.ubuntu }}-amd64:cache
+          outputs: type=image,name=${{ env.REGISTRY_SERVER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Push mom by digest
+        id: push-mom
+        uses: docker/build-push-action@v5
+        with:
+          context: ./mom
+          file: ./mom/Dockerfile
+          platforms: linux/amd64
+          build-args: |
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/mom-cache-ubuntu-${{ matrix.ubuntu }}-amd64:cache
+          outputs: type=image,name=${{ env.REGISTRY_MOM_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Export digests
+        run: |
+          mkdir -p /tmp/digests/frontend /tmp/digests/server /tmp/digests/mom
+          frontend_digest="${{ steps.push-frontend.outputs.digest }}"
+          server_digest="${{ steps.push-server.outputs.digest }}"
+          mom_digest="${{ steps.push-mom.outputs.digest }}"
+          touch "/tmp/digests/frontend/${frontend_digest#sha256:}"
+          touch "/tmp/digests/server/${server_digest#sha256:}"
+          touch "/tmp/digests/mom/${mom_digest#sha256:}"
+      - name: Upload frontend digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-ubuntu-${{ matrix.ubuntu }}-digests-linux-amd64
+          path: /tmp/digests/frontend/*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload server digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-ubuntu-${{ matrix.ubuntu }}-digests-linux-amd64
+          path: /tmp/digests/server/*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload mom digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: mom-ubuntu-${{ matrix.ubuntu }}-digests-linux-amd64
+          path: /tmp/digests/mom/*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Debug session
+        if: ${{ failure() }}
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true
+
+  build-test-push-arm64:
+    name: arm64 (ubuntu-${{ matrix.ubuntu }})
+    runs-on: LinuxARM64-8core-32G-300Gb
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: *ubuntu_versions
+    permissions:
+      packages: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Install Docker
+        run: |
+           for pkg in docker.io containerd runc; do sudo apt-get remove $pkg; done
+           sudo apt-get update
+           sudo apt-get install ca-certificates curl
+           sudo install -m 0755 -d /etc/apt/keyrings
+           sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+           sudo chmod a+r /etc/apt/keyrings/docker.asc
+           echo \
+             "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+             $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" | \
+             sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+           sudo apt-get update -y
+           sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+           sudo usermod -aG docker $USER
+           sudo apt-get install acl
+           sudo setfacl --modify user:$USER:rw /var/run/docker.sock
+      - name: Test Docker Installation
+        run: docker run hello-world
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          logout: false
+      - name: Prune pre-loaded GHA docker images
+        run: |
+          docker images
+          docker image prune -a -f
+          docker images
+      - name: Build frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/arm64
+          tags: ${{ env.REGISTRY_FRONTEND_IMAGE }}:ubuntu-${{ matrix.ubuntu }}-spack-stack-${{ env.SPACK_STACK_VERSION }}
+          build-args: |
+            SPACK_BUILD_JOBS=8
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+            UBUNTU_VERSION=${{ matrix.ubuntu }}
+            SPACK_STACK_VERSION=${{ env.SPACK_STACK_VERSION }}
+          secrets: |
+            "github_token=${{ secrets.GITHUB_TOKEN }}"
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/frontend-cache-ubuntu-${{ matrix.ubuntu }}-arm64:cache
+          cache-to: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/frontend-cache-ubuntu-${{ matrix.ubuntu }}-arm64:cache,mode=max
+          load: true
+      - name: Build server image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          file: ./server/Dockerfile
+          platforms: linux/arm64
+          tags: ${{ env.REGISTRY_SERVER_IMAGE }}:ubuntu-${{ matrix.ubuntu }}-spack-stack-${{ env.SPACK_STACK_VERSION }}
+          build-args: |
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/server-cache-ubuntu-${{ matrix.ubuntu }}-arm64:cache
+          cache-to: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/server-cache-ubuntu-${{ matrix.ubuntu }}-arm64:cache,mode=max
+          load: true
+      - name: Build mom image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./mom
+          file: ./mom/Dockerfile
+          platforms: linux/arm64
+          tags: ${{ env.REGISTRY_MOM_IMAGE }}:ubuntu-${{ matrix.ubuntu }}-spack-stack-${{ env.SPACK_STACK_VERSION }}
+          build-args: |
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/mom-cache-ubuntu-${{ matrix.ubuntu }}-arm64:cache
+          cache-to: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/mom-cache-ubuntu-${{ matrix.ubuntu }}-arm64:cache,mode=max
+          load: true
+      - name: Start containers for testing
+        env:
+          UBUNTU_VERSION: ${{ matrix.ubuntu }}
+          OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
+          SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
+        run: docker compose -f docker-compose-test.yml up --pull never -d
+      - name: Check cluster logs
+        run: docker compose -f docker-compose-test.yml logs
+      - name: Check status of the cluster containers
+        run: docker compose -f docker-compose-test.yml ps
+      - name: Check status of PBS
+        run: docker exec spack-stack-server bash -lc "qstat -Bf"
+      - name: Check status of PBS nodes
+        run: docker exec spack-stack-server bash -lc "pbsnodes -a"
+      - name: Run a PBS job
+        run: |
+          docker exec spack-stack-frontend bash -lc "echo hostname | qsub"
+          sleep 5
+          docker exec spack-stack-server bash -lc "qstat -x"
+      - name: Test SSH access to PBS compute nodes
+        run: |
+          docker exec spack-stack-frontend bash -lc "timeout 5s ssh pbsnode1 hostname"
+          docker exec spack-stack-frontend bash -lc "timeout 5s ssh pbsnode2 hostname"
+          docker exec spack-stack-frontend bash -lc "timeout 5s ssh pbsnode3 hostname"
+      - name: Load spack-stack envs
+        run: |
+          docker exec spack-stack-frontend bash -l -c "module use /opt/spack-stack/envs/unified-env/modules/Core ; module load stack-gcc stack-openmpi jedi-mpas-env; module list"
+          docker exec spack-stack-frontend bash -l -c "module use /opt/spack-stack/envs/unified-env/modules/Core ; module load stack-gcc stack-openmpi jedi-fv3-env; module list"
+      - name: Compile and run MPI program
+        run: docker exec spack-stack-frontend bash -l -c "cd test; ./test_hello.sh"
+      - name: Shut down PBS cluster containers
+        if: always()
+        env:
+          UBUNTU_VERSION: ${{ matrix.ubuntu }}
+          OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
+          SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
+        run: docker compose -f docker-compose-test.yml down
+      - name: Push frontend by digest
+        id: push-frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/arm64
+          build-args: |
+            SPACK_BUILD_JOBS=8
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+            UBUNTU_VERSION=${{ matrix.ubuntu }}
+            SPACK_STACK_VERSION=${{ env.SPACK_STACK_VERSION }}
+          secrets: |
+            "github_token=${{ secrets.GITHUB_TOKEN }}"
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/frontend-cache-ubuntu-${{ matrix.ubuntu }}-arm64:cache
+          outputs: type=image,name=${{ env.REGISTRY_FRONTEND_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Push server by digest
+        id: push-server
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          file: ./server/Dockerfile
+          platforms: linux/arm64
+          build-args: |
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/server-cache-ubuntu-${{ matrix.ubuntu }}-arm64:cache
+          outputs: type=image,name=${{ env.REGISTRY_SERVER_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Push mom by digest
+        id: push-mom
+        uses: docker/build-push-action@v5
+        with:
+          context: ./mom
+          file: ./mom/Dockerfile
+          platforms: linux/arm64
+          build-args: |
+            BASE_IMAGE_TAG=ubuntu-${{ matrix.ubuntu }}-openpbs-${{ env.OPENPBS_VERSION }}
+          cache-from: type=registry,ref=ghcr.io/noaa-gsl/dockerspackstackpbscluster/mom-cache-ubuntu-${{ matrix.ubuntu }}-arm64:cache
+          outputs: type=image,name=${{ env.REGISTRY_MOM_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+      - name: Export digests
+        run: |
+          mkdir -p /tmp/digests/frontend /tmp/digests/server /tmp/digests/mom
+          frontend_digest="${{ steps.push-frontend.outputs.digest }}"
+          server_digest="${{ steps.push-server.outputs.digest }}"
+          mom_digest="${{ steps.push-mom.outputs.digest }}"
+          touch "/tmp/digests/frontend/${frontend_digest#sha256:}"
+          touch "/tmp/digests/server/${server_digest#sha256:}"
+          touch "/tmp/digests/mom/${mom_digest#sha256:}"
+      - name: Upload frontend digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-ubuntu-${{ matrix.ubuntu }}-digests-linux-arm64
+          path: /tmp/digests/frontend/*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload server digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-ubuntu-${{ matrix.ubuntu }}-digests-linux-arm64
+          path: /tmp/digests/server/*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload mom digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: mom-ubuntu-${{ matrix.ubuntu }}-digests-linux-arm64
+          path: /tmp/digests/mom/*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Debug session
+        if: ${{ failure() }}
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 60
+        with:
+          limit-access-to-actor: true
+
+  merge-frontend:
+    name: Merge frontend (ubuntu-${{ matrix.ubuntu }})
+    runs-on: ubuntu-latest
+    needs:
+      - build-test-push-amd64
+      - build-test-push-arm64
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: *ubuntu_versions
+    permissions:
+      packages: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: frontend-ubuntu-${{ matrix.ubuntu }}-digests-*
+          merge-multiple: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_FRONTEND_IMAGE }}
+          tags: |
+            type=raw,value=ubuntu-${{ matrix.ubuntu }}-spack-stack-${{ env.SPACK_STACK_VERSION }}
+            ${{ matrix.ubuntu == env.LATEST_UBUNTU && 'type=raw,value=latest' || '' }}
+          flavor: |
+            latest=false
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          logout: false
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY_FRONTEND_IMAGE }}@sha256:%s ' *)
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_FRONTEND_IMAGE }}:${{ steps.meta.outputs.version }}
+
+  merge-server:
+    name: Merge server (ubuntu-${{ matrix.ubuntu }})
+    runs-on: ubuntu-latest
+    needs:
+      - build-test-push-amd64
+      - build-test-push-arm64
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: *ubuntu_versions
+    permissions:
+      packages: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: server-ubuntu-${{ matrix.ubuntu }}-digests-*
+          merge-multiple: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_SERVER_IMAGE }}
+          tags: |
+            type=raw,value=ubuntu-${{ matrix.ubuntu }}-spack-stack-${{ env.SPACK_STACK_VERSION }}
+            ${{ matrix.ubuntu == env.LATEST_UBUNTU && 'type=raw,value=latest' || '' }}
+          flavor: |
+            latest=false
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          logout: false
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY_SERVER_IMAGE }}@sha256:%s ' *)
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_SERVER_IMAGE }}:${{ steps.meta.outputs.version }}
+
+  merge-mom:
+    name: Merge mom (ubuntu-${{ matrix.ubuntu }})
+    runs-on: ubuntu-latest
+    needs:
+      - build-test-push-amd64
+      - build-test-push-arm64
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: *ubuntu_versions
+    permissions:
+      packages: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: mom-ubuntu-${{ matrix.ubuntu }}-digests-*
+          merge-multiple: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_MOM_IMAGE }}
+          tags: |
+            type=raw,value=ubuntu-${{ matrix.ubuntu }}-spack-stack-${{ env.SPACK_STACK_VERSION }}
+            ${{ matrix.ubuntu == env.LATEST_UBUNTU && 'type=raw,value=latest' || '' }}
+          flavor: |
+            latest=false
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          logout: false
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY_MOM_IMAGE }}@sha256:%s ' *)
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_MOM_IMAGE }}:${{ steps.meta.outputs.version }}
