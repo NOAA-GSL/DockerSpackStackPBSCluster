@@ -103,7 +103,7 @@ jobs:
           UBUNTU_VERSION: ${{ matrix.ubuntu }}
           OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
           SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
-        run: docker compose -f docker-compose-test.yml up --pull never -d
+        run: docker compose -f docker-compose-test.yml up --pull never -d --wait
       - name: Check cluster logs
         run: docker compose -f docker-compose-test.yml logs
       - name: Check status of the cluster containers
@@ -306,7 +306,7 @@ jobs:
           UBUNTU_VERSION: ${{ matrix.ubuntu }}
           OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
           SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
-        run: docker compose -f docker-compose-test.yml up --pull never -d
+        run: docker compose -f docker-compose-test.yml up --pull never -d --wait
       - name: Check cluster logs
         run: docker compose -f docker-compose-test.yml logs
       - name: Check status of the cluster containers
