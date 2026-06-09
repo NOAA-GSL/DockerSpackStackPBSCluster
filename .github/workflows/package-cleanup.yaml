@@ -1,6 +1,10 @@
 name: PackageCleanup
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
     inputs:
       buildcache_cutoff:
@@ -12,94 +16,85 @@ on:
         required: false
         default: 'true'
 
+env:
+  # Must stay in sync with docker.yml. Used to construct per-(ubuntu, spack-stack)
+  # buildcache repo names for the cleanup-stale-buildcache job.
+  SPACK_STACK_VERSION: 2.1.0
+
 jobs:
-  cleanup-untagged:
+
+  # Remove untagged versions of our published images. New publishes leave the
+  # previous tagged versions as "untagged" if the tag was moved (e.g. when
+  # `latest` is re-pointed). Runs continuously to keep the registry tidy.
+  cleanup-packages:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
     permissions:
       packages: write
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        container: [frontend, server, mom]
     steps:
-      - name: Remove untagged versions of dockerspackstackpbscluster/pbs-spack-stack-frontend
+      -
+        name: Remove untagged versions of dockerspackstackpbscluster/pbs-spack-stack-${{ matrix.container }}
         uses: actions/delete-package-versions@v5
-        with: 
-          package-name: 'dockerspackstackpbscluster/pbs-spack-stack-frontend'
-          package-type: 'container'
-          min-versions-to-keep: 0
-          delete-only-untagged-versions: 'true'
-      - name: Remove untagged versions of dockerspackstackpbscluster/pbs-spack-stack-server
-        uses: actions/delete-package-versions@v5
-        with: 
-          package-name: 'dockerspackstackpbscluster/pbs-spack-stack-server'
-          package-type: 'container'
-          min-versions-to-keep: 0
-          delete-only-untagged-versions: 'true'
-      - name: Remove untagged versions of dockerspackstackpbscluster/pbs-spack-stack-mom
-        uses: actions/delete-package-versions@v5
-        with: 
-          package-name: 'dockerspackstackpbscluster/pbs-spack-stack-mom'
-          package-type: 'container'
-          min-versions-to-keep: 0
-          delete-only-untagged-versions: 'true'
-      - name: Remove untagged versions of dockerspackstackpbscluster/frontend-cache-amd64
-        uses: actions/delete-package-versions@v5
-        with: 
-          package-name: 'dockerspackstackpbscluster/frontend-cache-amd64'
-          package-type: 'container'
-          min-versions-to-keep: 0
-          delete-only-untagged-versions: 'true'
-      - name: Remove untagged versions of dockerspackstackpbscluster/frontend-cache-arm64
-        uses: actions/delete-package-versions@v5
-        with: 
-          package-name: 'dockerspackstackpbscluster/frontend-cache-arm64'
-          package-type: 'container'
-          min-versions-to-keep: 0
-          delete-only-untagged-versions: 'true'
-      - name: Remove untagged versions of dockerspackstackpbscluster/server-cache-amd64
-        uses: actions/delete-package-versions@v5
-        with: 
-          package-name: 'dockerspackstackpbscluster/server-cache-amd64'
-          package-type: 'container'
-          min-versions-to-keep: 0
-          delete-only-untagged-versions: 'true'
-      - name: Remove untagged versions of dockerspackstackpbscluster/server-cache-arm64
-        uses: actions/delete-package-versions@v5
-        with: 
-          package-name: 'dockerspackstackpbscluster/server-cache-arm64'
-          package-type: 'container'
-          min-versions-to-keep: 0
-          delete-only-untagged-versions: 'true'
-      - name: Remove untagged versions of dockerspackstackpbscluster/mom-cache-amd64
-        uses: actions/delete-package-versions@v5
-        with: 
-          package-name: 'dockerspackstackpbscluster/mom-cache-amd64'
-          package-type: 'container'
-          min-versions-to-keep: 0
-          delete-only-untagged-versions: 'true'
-      - name: Remove untagged versions of dockerspackstackpbscluster/mom-cache-arm64
-        uses: actions/delete-package-versions@v5
-        with: 
-          package-name: 'dockerspackstackpbscluster/mom-cache-arm64'
+        with:
+          package-name: 'dockerspackstackpbscluster/pbs-spack-stack-${{ matrix.container }}'
           package-type: 'container'
           min-versions-to-keep: 0
           delete-only-untagged-versions: 'true'
 
+  # Remove untagged versions of the docker layer caches written by CI. Each
+  # (container, ubuntu, arch) combination has its own cache package -- when CI
+  # pushes a new :cache tag, the previous version becomes untagged.
+  cleanup-caches:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        container: [frontend, server, mom]
+        ubuntu: ['24.04', '26.04']
+        arch: [amd64, arm64]
+    steps:
+      -
+        name: Remove untagged versions of dockerspackstackpbscluster/${{ matrix.container }}-cache-ubuntu-${{ matrix.ubuntu }}-${{ matrix.arch }}
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: 'dockerspackstackpbscluster/${{ matrix.container }}-cache-ubuntu-${{ matrix.ubuntu }}-${{ matrix.arch }}'
+          package-type: 'container'
+          min-versions-to-keep: 0
+          delete-only-untagged-versions: 'true'
+
+  # Age-based cleanup of stale spack OCI buildcache entries. Manual only (cutoff
+  # input is required) and parameterized so the operator can do dry runs first.
+  # One job per (ubuntu, spack-stack) cache repo, since each gets its own
+  # per-spec-hash blob/tag population from autopush.
   cleanup-stale-buildcache:
     if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.buildcache_cutoff != '' }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ['24.04', '26.04']
     steps:
-      - name: Clean stale buildcache entries
+      -
+        name: Clean stale buildcache entries for ubuntu-${{ matrix.ubuntu }}-spack-stack-${{ env.SPACK_STACK_VERSION }}
         uses: actions/github-script@v7
         with:
           script: |
             const cutoff = new Date('${{ github.event.inputs.buildcache_cutoff }}');
             const dryRun = '${{ github.event.inputs.dry_run }}' === 'true';
             const org = 'noaa-gsl';
-            const packageName = 'dockerspackstackpbscluster/buildcache';
+            const packageName = 'dockerspackstackpbscluster/buildcache-ubuntu-${{ matrix.ubuntu }}-spack-stack-${{ env.SPACK_STACK_VERSION }}';
 
+            console.log(`Package: ${packageName}`);
             console.log(`Cutoff date: ${cutoff.toISOString()}`);
             console.log(`Dry run: ${dryRun}`);
 
@@ -123,6 +118,7 @@ jobs:
                 const createdAt = new Date(version.created_at);
                 const tags = version.metadata?.container?.tags || [];
 
+                // Never delete index entries - they are updated in place by spack buildcache update-index
                 const isIndex = tags.some(t => t.includes('index') || t.startsWith('_'));
                 if (isIndex) {
                   console.log(`Preserving index: ${version.id} (tags: ${tags.join(', ')})`);
@@ -153,4 +149,4 @@ jobs:
               page++;
             }
 
-            console.log(`\nSummary: ${deleted} ${dryRun ? 'would be ' : ''}deleted, ${kept} kept`);
+            console.log(`\nSummary for ${packageName}: ${deleted} ${dryRun ? 'would be ' : ''}deleted, ${kept} kept`);

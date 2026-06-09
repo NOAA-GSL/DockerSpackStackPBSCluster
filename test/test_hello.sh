@@ -38,7 +38,7 @@ mpiexec ./hello.exe > hello.raw
 EOF
 
 # -W block=true makes qsub wait for the job to finish and exit with the job's
-# status, so a job failure trips `set -e` just like the old synchronous srun did.
+# status, so a job failure trips `set -e` instead of being silently masked.
 qsub -W block=true hello.pbs
 
 sort hello.raw > hello.out

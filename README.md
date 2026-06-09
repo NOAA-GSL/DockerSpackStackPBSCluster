@@ -11,7 +11,7 @@ updated for PBS and OpenPBS.
 There are three containers:
 
 * A frontend container that acts as a PBS cluster login node.
-  Spack-stack is installed on the frontend in /opt which is mounted
+  Spack-stack is installed on the frontend in /opt/spack-stack which is mounted
   across the cluster as a shared volume using docker compose
 * A server container that acts as a PBS server/controller node
 * A mom container that acts as a PBS compute node
@@ -20,10 +20,14 @@ These containers are launched using Docker Compose to build
 a fully functioning PBS cluster.  A `docker-compose.yml`
 file defines the cluster, specifying ports and volumes to
 be shared.  Multiple instances of the mom container can be
-added to `docker-compose.yml` to create clusters of different
-sizes.  The cluster behaves as if it were running on multiple
-nodes even if the containers are all running on the same host
-machine.
+added to `docker-compose.yml` to grow the cluster: the PBS server
+pre-declares nodes `pbsnode1` through `pbsnode10` (raise the cap with
+the `PBS_MAX_NODES` environment variable on the server container), so
+adding a `pbsnodeN` service with a matching `hostname: pbsnodeN` is all
+it takes for that node to join. Declared nodes without a running
+container simply appear `down` in `pbsnodes -a`.  The cluster behaves
+as if it were running on multiple nodes even if the containers are all
+running on the same host machine.
 
 # Image tags and base selection
 
@@ -66,7 +70,7 @@ UBUNTU_VERSION=24.04 docker compose up -d --pull never
 ## Quickest path: docker compose
 
 `docker compose build` reads `.env` and constructs the full set of build args
-automatically. To build all three containers (frontend, master, node) for the
+automatically. To build all three containers (frontend, server, mom) for the
 default Ubuntu version:
 
 ```bash
@@ -135,7 +139,7 @@ docker buildx build \
   frontend/
 ```
 
-The frontend build compiles ~355 scientific software packages and can take
+The frontend build compiles ~356 scientific software packages and can take
 many hours on first build from an empty buildcache. Subsequent builds reuse
 cached packages from GHCR and finish much faster.
 
@@ -194,7 +198,7 @@ docker compose down -v   # the -v flag deletes the named volumes
 UBUNTU_VERSION=24.04 docker compose up -d --pull never
 ```
 
-Without `-v`, the new container will mount the previous run's `/opt`, which
+Without `-v`, the new container will mount the previous run's `/opt/spack-stack`, which
 contains spack-built binaries linked against the *previous* OS's glibc. The
 cluster will appear to start fine but `qsub` or other PBS job submission of any
 spack-built executable will fail with `GLIBC_X.YZ not found`.
@@ -215,7 +219,7 @@ docker compose -f docker-compose.yml ps
 ```
 To check status of PBS:
 ```
-docker exec spack-stack-frontend qstat
+docker exec spack-stack-frontend bash -lc "qstat"
 ```
 To submit a simple PBS job:
 ```
