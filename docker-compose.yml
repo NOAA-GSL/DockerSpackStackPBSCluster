@@ -73,36 +73,26 @@ services:
         BASE_IMAGE_TAG: ubuntu-${UBUNTU_VERSION:-26.04}-openpbs-${OPENPBS_VERSION}
     container_name: spack-stack-node1
     hostname: pbsnode1
-    environment:
-      - PBS_NODENAME=pbsnode1
 
   pbsnode2:
     <<: *node-common
     container_name: spack-stack-node2
     hostname: pbsnode2
-    environment:
-      - PBS_NODENAME=pbsnode2
 
   pbsnode3:
     <<: *node-common
     container_name: spack-stack-node3
     hostname: pbsnode3
-    environment:
-      - PBS_NODENAME=pbsnode3
 
   pbsnode4:
     <<: *node-common
     container_name: spack-stack-node4
     hostname: pbsnode4
-    environment:
-      - PBS_NODENAME=pbsnode4
 
   pbsnode5:
     <<: *node-common
     container_name: spack-stack-node5
     hostname: pbsnode5
-    environment:
-      - PBS_NODENAME=pbsnode5
 
 volumes:
   home-vol:
