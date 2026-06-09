@@ -114,6 +114,15 @@ RUN cd /opt/spack-stack \
    '      prefix: /opt/pbs' \
    > /tmp/openpbs-tm.yaml \
  && spack -e . config add -f /tmp/openpbs-tm.yaml \
+ # Pin met to a single graphics variant. A from-scratch concretization resolves all
+ # consumers (metplus -> global-workflow/neptune/ufs-srw envs) to met~graphics, but with
+ # reuse:true + unify:when_possible the solver will greedily reuse a stale met+graphics
+ # blob if one lingers in the buildcache -- producing two met@12.1.1 specs that collide on
+ # the unhashed module name (met/12.1.1.lua). Requiring ~graphics forbids the +graphics
+ # variant so reuse can never reintroduce the duplicate, on any arch or cache state. The
+ # graphics extras are unused here (metplus plotting variants are off), so this is the
+ # lighter build and changes nothing functionally. \
+ && spack -e . config add 'packages:met:require:"~graphics"' \
  # Use the spack-stack site default target (x86_64_v3 on x86_64 hosts). \
  # Earlier this block added `target:[x86_64]` for buildcache portability, but spack merged \
  # that with the site default to `[x86_64, x86_64_v3]`, and the concretizer's choice between \
