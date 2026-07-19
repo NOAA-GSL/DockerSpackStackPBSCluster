@@ -37,6 +37,7 @@ RUN apt-get -y update \
         gfortran-13 \
         cpp-13 \
         git \
+        git-lfs \
         gnupg2 \
         iproute2 \
         libcrypt-dev \
