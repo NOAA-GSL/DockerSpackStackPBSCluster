@@ -26,6 +26,7 @@ RUN <<EOF
         gcc \
         gfortran \
         git \
+        git-lfs \
         gnupg2 \
         iproute2 \
         locales \
