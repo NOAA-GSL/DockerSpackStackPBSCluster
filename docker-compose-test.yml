@@ -29,7 +29,7 @@ services:
       secrets:
         - github_token
     image: ghcr.io/noaa-gsl/dockerspackstackpbscluster/pbs-spack-stack-frontend:ubuntu-${UBUNTU_VERSION:-26.04}-spack-stack-${SPACK_STACK_VERSION:-2.1.0}
-    container_name: spack-stack-frontend
+    container_name: ${CLUSTER_NAME:-spack-stack}-frontend
     shm_size: '4g'
     hostname: pbsfrontend
     user: admin
@@ -37,8 +37,6 @@ services:
       - home-vol:/home/admin
       - opt-vol:/opt/spack-stack
       - ./test:/home/admin/test
-    ports:
-      - 8888:8888
     healthcheck:
       test: ["CMD", "test", "-f", "/tmp/ssh-ready"]
       interval: 5s
@@ -52,7 +50,7 @@ services:
       args:
         BASE_IMAGE_TAG: ubuntu-${UBUNTU_VERSION:-26.04}-openpbs-${OPENPBS_VERSION}
     image: ghcr.io/noaa-gsl/dockerspackstackpbscluster/pbs-spack-stack-server:ubuntu-${UBUNTU_VERSION:-26.04}-spack-stack-${SPACK_STACK_VERSION:-2.1.0}
-    container_name: spack-stack-server
+    container_name: ${CLUSTER_NAME:-spack-stack}-server
     shm_size: '4g'
     hostname: pbsserver
     user: admin
@@ -60,10 +58,6 @@ services:
       - home-vol:/home/admin
       - opt-vol:/opt/spack-stack:ro
       - ./test:/home/admin/test
-    ports:
-      - 15001:15001
-      - 15003:15003
-      - 17001:17001
     depends_on:
       pbsfrontend:
         condition: service_healthy
@@ -74,27 +68,27 @@ services:
       context: ./mom
       args:
         BASE_IMAGE_TAG: ubuntu-${UBUNTU_VERSION:-26.04}-openpbs-${OPENPBS_VERSION}
-    container_name: spack-stack-node1
+    container_name: ${CLUSTER_NAME:-spack-stack}-node1
     hostname: pbsnode1
 
   pbsnode2:
     <<: *node-common
-    container_name: spack-stack-node2
+    container_name: ${CLUSTER_NAME:-spack-stack}-node2
     hostname: pbsnode2
 
   pbsnode3:
     <<: *node-common
-    container_name: spack-stack-node3
+    container_name: ${CLUSTER_NAME:-spack-stack}-node3
     hostname: pbsnode3
 
   pbsnode4:
     <<: *node-common
-    container_name: spack-stack-node4
+    container_name: ${CLUSTER_NAME:-spack-stack}-node4
     hostname: pbsnode4
 
   pbsnode5:
     <<: *node-common
-    container_name: spack-stack-node5
+    container_name: ${CLUSTER_NAME:-spack-stack}-node5
     hostname: pbsnode5
 
 volumes:

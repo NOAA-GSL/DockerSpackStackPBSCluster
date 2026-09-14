@@ -24,6 +24,15 @@ env:
   REGISTRY_MOM_IMAGE: ghcr.io/noaa-gsl/dockerspackstackpbscluster/pbs-spack-stack-mom
 
 jobs:
+  generate_compose_tests:
+    name: generate-compose.py unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Run unit tests
+        run: python3 -m unittest test_generate_compose.py -v
+
   build-test-push-amd64:
     name: amd64 (ubuntu-${{ matrix.ubuntu }})
     runs-on: ubuntu2204-8c-32g-300ssd
@@ -135,6 +144,39 @@ jobs:
           OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
           SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
         run: docker compose -f docker-compose-test.yml down
+      - name: Generate a 2-node compose file for concurrency test
+        run: ./generate-compose.py --nodes 2
+      - name: Start two simultaneous clusters with distinct CLUSTER_NAME
+        env:
+          UBUNTU_VERSION: ${{ matrix.ubuntu }}
+          OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
+          SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
+        run: |
+          CLUSTER_NAME=clustera docker compose -p clustera up -d --pull never --wait
+          CLUSTER_NAME=clusterb docker compose -p clusterb up -d --pull never --wait
+      - name: Check container names reflect CLUSTER_NAME
+        run: |
+          for name in clustera-frontend clustera-server clustera-node1 clustera-node2 \
+                      clusterb-frontend clusterb-server clusterb-node1 clusterb-node2; do
+            docker ps --format '{{.Names}}' | grep -qx "$name"
+          done
+      - name: Check status of PBS in both clusters
+        run: |
+          docker exec clustera-server bash -lc "qstat -Bf"
+          docker exec clusterb-server bash -lc "qstat -Bf"
+      - name: Run a PBS job in both clusters simultaneously
+        run: |
+          docker exec clustera-frontend bash -lc "echo hostname | qsub"
+          docker exec clusterb-frontend bash -lc "echo hostname | qsub"
+      - name: Shut down both clusters
+        if: always()
+        env:
+          UBUNTU_VERSION: ${{ matrix.ubuntu }}
+          OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
+          SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
+        run: |
+          CLUSTER_NAME=clustera docker compose -p clustera down --remove-orphans -v
+          CLUSTER_NAME=clusterb docker compose -p clusterb down --remove-orphans -v
       - name: Push frontend by digest
         id: push-frontend
         uses: docker/build-push-action@v5
@@ -338,6 +380,39 @@ jobs:
           OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
           SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
         run: docker compose -f docker-compose-test.yml down
+      - name: Generate a 2-node compose file for concurrency test
+        run: ./generate-compose.py --nodes 2
+      - name: Start two simultaneous clusters with distinct CLUSTER_NAME
+        env:
+          UBUNTU_VERSION: ${{ matrix.ubuntu }}
+          OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
+          SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
+        run: |
+          CLUSTER_NAME=clustera docker compose -p clustera up -d --pull never --wait
+          CLUSTER_NAME=clusterb docker compose -p clusterb up -d --pull never --wait
+      - name: Check container names reflect CLUSTER_NAME
+        run: |
+          for name in clustera-frontend clustera-server clustera-node1 clustera-node2 \
+                      clusterb-frontend clusterb-server clusterb-node1 clusterb-node2; do
+            docker ps --format '{{.Names}}' | grep -qx "$name"
+          done
+      - name: Check status of PBS in both clusters
+        run: |
+          docker exec clustera-server bash -lc "qstat -Bf"
+          docker exec clusterb-server bash -lc "qstat -Bf"
+      - name: Run a PBS job in both clusters simultaneously
+        run: |
+          docker exec clustera-frontend bash -lc "echo hostname | qsub"
+          docker exec clusterb-frontend bash -lc "echo hostname | qsub"
+      - name: Shut down both clusters
+        if: always()
+        env:
+          UBUNTU_VERSION: ${{ matrix.ubuntu }}
+          OPENPBS_VERSION: ${{ env.OPENPBS_VERSION }}
+          SPACK_STACK_VERSION: ${{ env.SPACK_STACK_VERSION }}
+        run: |
+          CLUSTER_NAME=clustera docker compose -p clustera down --remove-orphans -v
+          CLUSTER_NAME=clusterb docker compose -p clusterb down --remove-orphans -v
       - name: Push frontend by digest
         id: push-frontend
         uses: docker/build-push-action@v5
@@ -419,6 +494,7 @@ jobs:
     needs:
       - build-test-push-amd64
       - build-test-push-arm64
+      - generate_compose_tests
     strategy:
       fail-fast: false
       matrix:
@@ -470,6 +546,7 @@ jobs:
     needs:
       - build-test-push-amd64
       - build-test-push-arm64
+      - generate_compose_tests
     strategy:
       fail-fast: false
       matrix:
@@ -521,6 +598,7 @@ jobs:
     needs:
       - build-test-push-amd64
       - build-test-push-arm64
+      - generate_compose_tests
     strategy:
       fail-fast: false
       matrix:
