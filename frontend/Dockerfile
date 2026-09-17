@@ -257,6 +257,11 @@ RUN --mount=type=secret,id=github_token <<EOF
   # Set parallel build jobs to match CI runner core count
   spack config add config:build_jobs:${SPACK_BUILD_JOBS}
 
+  # Increase timeouts for slow connections on CI runners
+  spack config add config:connect_timeout:120
+  spack config add config:read_timeout:120
+  spack config add config:fetch_retries:10
+
   # Configure buildcache credentials and autopush if a GitHub token was provided
   if [ -s /run/secrets/github_token ]; then
     export GITHUB_TOKEN=$(cat /run/secrets/github_token)
